@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>5km Split Calculator</title>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
+
+    <script type="text/babel">
+        const { useState, useRef } = React;
+
+        function App() {
+            const [sessions, setSessions] = useState([]);
+            const [isProcessing, setIsProcessing] = useState(false);
+            const fileInputRef = useRef(null);
+
+            const loadTesseract = async () => {
+                if (window.Tesseract) return window.Tesseract;
+                
+                return new Promise((resolve, reject) => {
+                    const script = document.createElement('script');
+                    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js';
+                    script.onload = () => {
+                        resolve(window.Tesseract);
+                    };
+                    script.onerror = reject;
+                    document.head.appendChild(script);
+                });
+            };
+
+            const extractTimes = (text) => {
+                const pattern = /(\d{1,2}):(\d{2})(?::(\d{2}))?/g;
+                const times = [];
+                let match;
+                while ((match = pattern.exec(text)) !== null) {
+                    times.push(match[0]);
+                }
+                return [...new Set(times)];
+            };
+
+            const timeToSeconds = (timeStr) => {
+                const parts = timeStr.split(':');
+                if (parts.length === 2) {
+                    return parseInt(parts[0]) * 60 + parseInt(parts[1]);
+                } else if (parts.length === 3) {
+                    return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
+                }
+                return 0;
+            };
+
+            const secondsToTime = (seconds) => {
+                const hrs = Math.floor(seconds / 3600);
+                const mins = Math.floor((seconds % 3600) / 60);
+                const secs = seconds % 60;
+                if (hrs > 0) {
+                    return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+                }
+                return `${mins}:${secs.toString().padStart(2, '0')}`;
+            };
+
+            const processImages = async (files) => {
+                const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+                if (imageFiles.length === 0) {
+                    alert('Please select image files');
+                    return;
+                }
+
+                setIsProcessing(true);
+                try {
+                    const Tesseract = await loadTesseract();
+                    
+                    for (const file of imageFiles) {
+                        const { data } = await Tesseract.recognize(file, 'eng');
+                        const fullText = data.text;
+                        const times = extractTimes(fullText);
+                        
+                        // Auto-detect unit type from text
+                        const hasMiles = /\bmi\b|\bmin\/mi\b/i.test(fullText);
+                        const hasKm = /\bkm\b/i.test(fullText);
+                        const unitType = hasMiles ? 'miles' : (hasKm ? 'km' : 'km'); // default to km
+                        
+                        // Auto-assign first 5 times to the distances
+                        const kmTimes = {};
+                        for (let i = 0; i < Math.min(5, times.length); i++) {
+                            kmTimes[i + 1] = times[i];
+                        }
+                        
+                        const total5km = calculateTotal(unitType, kmTimes);
+                        
+                        setSessions(prev => [...prev, {
+                            id: Date.now() + Math.random(),
+                            fileName: file.name,
+                            allTimes: times,
+                            kmTimes: kmTimes,
+                            unitType: unitType,
+                            total5km: total5km
+                        }]);
+                    }
+                    
+                    if (Tesseract.terminateWorker) {
+                        await Tesseract.terminateWorker();
+                    }
+                } catch (error) {
+                    alert('Error: ' + error.message);
+                } finally {
+                    setIsProcessing(false);
+                }
+            };
+
+            const calculateTotal = (unitType, kmTimes) => {
+                const distances = Object.keys(kmTimes)
+                    .map(d => ({ dist: parseFloat(d), time: kmTimes[d] }))
+                    .sort((a, b) => a.dist - b.dist);
+                
+                if (distances.length === 5) {
+                    if (unitType === 'miles') {
+                        // These are split times for each mile, need cumulative
+                        let cumulativeSeconds = 0;
+                        const cumulative = [];
+                        for (const d of distances) {
+                            cumulativeSeconds += timeToSeconds(d.time);
+                            cumulative.push({ dist: d.dist, seconds: cumulativeSeconds });
+                        }
+                        
+                        // Find 5km (3.10686 miles)
+                        const target = 3.10686;
+                        let lower = cumulative[0], upper = cumulative[1];
+                        for (let i = 0; i < cumulative.length - 1; i++) {
+                            if (cumulative[i].dist <= target && cumulative[i + 1].dist >= target) {
+                                lower = cumulative[i];
+                                upper = cumulative[i + 1];
+                                break;
+                            }
+                        }
+                        
+                        const fraction = (target - lower.dist) / (upper.dist - lower.dist);
+                        const interpolated = Math.round(lower.seconds + (upper.seconds - lower.seconds) * fraction);
+                        return secondsToTime(interpolated);
+                    } else {
+                        // For km, these are split times too, need to add first 5
+                        const totalSeconds = distances.slice(0, 5).reduce((sum, d) => sum + timeToSeconds(d.time), 0);
+                        return secondsToTime(totalSeconds);
+                    }
+                }
+                return null;
+            };
+
+            const getDistanceLabels = (unitType) => {
+                if (unitType === 'miles') {
+                    return [
+                        { label: '1 mi', value: 1 },
+                        { label: '2 mi', value: 2 },
+                        { label: '3 mi', value: 3 },
+                        { label: '4 mi', value: 4 },
+                        { label: '5 mi', value: 5 }
+                    ];
+                }
+                return [
+                    { label: '1km', value: 1 },
+                    { label: '2km', value: 2 },
+                    { label: '3km', value: 3 },
+                    { label: '4km', value: 4 },
+                    { label: '5km', value: 5 }
+                ];
+            };
+
+            const updateUnitType = (sessionId, unit) => {
+                setSessions(prev => prev.map(session => {
+                    if (session.id === sessionId) {
+                        const updated = { ...session, unitType: unit };
+                        // Recalculate with new unit type instead of clearing
+                        updated.total5km = calculateTotal(unit, session.kmTimes);
+                        return updated;
+                    }
+                    return session;
+                }));
+            };
+
+            const updateKmTime = (sessionId, distance, time) => {
+                setSessions(prev => prev.map(session => {
+                    if (session.id === sessionId) {
+                        const updated = { ...session };
+                        if (time) {
+                            updated.kmTimes[distance] = time;
+                        } else {
+                            delete updated.kmTimes[distance];
+                        }
+                        
+                        const distances = Object.keys(updated.kmTimes)
+                            .map(d => ({ dist: parseFloat(d), time: updated.kmTimes[d] }))
+                            .sort((a, b) => a.dist - b.dist);
+                        
+                        if (distances.length === 5) {
+                            if (updated.unitType === 'miles') {
+                                // 5km = 3.10686 miles - interpolate between the mile markers
+                                const target = 3.10686;
+                                
+                                let lower = distances[0], upper = distances[1];
+                                for (let i = 0; i < distances.length - 1; i++) {
+                                    if (distances[i].dist <= target && distances[i + 1].dist >= target) {
+                                        lower = distances[i];
+                                        upper = distances[i + 1];
+                                        break;
+                                    }
+                                }
+                                
+                                const fraction = (target - lower.dist) / (upper.dist - lower.dist);
+                                const lowerSec = timeToSeconds(lower.time);
+                                const upperSec = timeToSeconds(upper.time);
+                                const interpolated = Math.round(lowerSec + (upperSec - lowerSec) * fraction);
+                                
+                                updated.total5km = secondsToTime(interpolated);
+                            } else {
+                                // For km, sum the 5 distances
+                                const total = distances.slice(0, 5).reduce((sum, e) => sum + timeToSeconds(e.time), 0);
+                                updated.total5km = secondsToTime(total);
+                            }
+                        } else {
+                            updated.total5km = null;
+                        }
+                        return updated;
+                    }
+                    return session;
+                }));
+            };
+
+            const deleteSession = (id) => {
+                setSessions(prev => prev.filter(s => s.id !== id));
+            };
+
+            return (
+                <div style={{ maxWidth: '900px', margin: '0 auto', padding: '20px', fontFamily: 'system-ui' }}>
+                    <h1>5km Split Calculator</h1>
+                    
+                    <label style={{
+                        display: 'block',
+                        border: '2px dashed #999',
+                        borderRadius: '8px',
+                        padding: '40px 20px',
+                        textAlign: 'center',
+                        cursor: 'pointer',
+                        backgroundColor: isProcessing ? '#f5f5f5' : '#fafafa'
+                    }}
+                    onDrop={(e) => { e.preventDefault(); processImages(e.dataTransfer.files); }}
+                    onDragOver={(e) => e.preventDefault()}>
+                        <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            onChange={(e) => processImages(e.target.files)}
+                            style={{ display: 'none' }}
+                        />
+                        <div style={{ fontSize: '16px', fontWeight: '500' }}>
+                            {isProcessing ? 'Processing...' : 'Drop images or click to upload'}
+                        </div>
+                    </label>
+
+                    {sessions.map((session, idx) => (
+                        <div key={session.id} style={{ marginTop: '30px', padding: '20px', border: '1px solid #ddd', borderRadius: '8px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '15px', alignItems: 'center' }}>
+                                <h3>Run {idx + 1}: {session.fileName}</h3>
+                                <div>
+                                    <select value={session.unitType || 'km'} onChange={(e) => updateUnitType(session.id, e.target.value)} style={{ marginRight: '10px', padding: '4px 8px' }}>
+                                        <option value="km">Kilometers</option>
+                                        <option value="miles">Miles</option>
+                                    </select>
+                                    <button onClick={() => deleteSession(session.id)} style={{ padding: '4px 8px', cursor: 'pointer' }}>Delete</button>
+                                </div>
+                            </div>
+
+                            {session.total5km && (
+                                <div style={{ padding: '12px', backgroundColor: '#e8f5e9', border: '2px solid #4caf50', borderRadius: '6px', marginBottom: '15px', textAlign: 'center' }}>
+                                    <div style={{ fontSize: '12px', color: '#666' }}>5km Total</div>
+                                    <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#2e7d32', fontFamily: 'monospace' }}>{session.total5km}</div>
+                                </div>
+                            )}
+
+                            <div style={{ marginBottom: '15px' }}>
+                                <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '10px' }}>Assign times:</div>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '10px' }}>
+                                    {getDistanceLabels(session.unitType).map(dist => (
+                                        <div key={dist.value}>
+                                            <label style={{ display: 'block', fontSize: '12px', marginBottom: '4px' }}>{dist.label}</label>
+                                            <select
+                                                value={session.kmTimes[dist.value] || ''}
+                                                onChange={(e) => updateKmTime(session.id, dist.value, e.target.value)}
+                                                style={{ width: '100%', padding: '6px', borderRadius: '4px', cursor: 'pointer' }}
+                                            >
+                                                <option value="">--</option>
+                                                {session.allTimes.map((t, i) => (
+                                                    <option key={i} value={t}>{t}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div style={{ fontSize: '12px', color: '#999' }}>
+                                Found: {session.allTimes.join(', ')}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
