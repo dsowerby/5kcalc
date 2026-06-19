@@ -118,37 +118,39 @@
                     .map(d => ({ dist: parseFloat(d), time: kmTimes[d] }))
                     .sort((a, b) => a.dist - b.dist);
                 
-                if (distances.length === 5) {
-                    if (unitType === 'miles') {
-                        // These are split times for each mile, need cumulative
-                        let cumulativeSeconds = 0;
-                        const cumulative = [];
-                        for (const d of distances) {
-                            cumulativeSeconds += timeToSeconds(d.time);
-                            cumulative.push({ dist: d.dist, seconds: cumulativeSeconds });
-                        }
-                        
-                        // Find 5km (3.10686 miles)
-                        const target = 3.10686;
-                        let lower = cumulative[0], upper = cumulative[1];
-                        for (let i = 0; i < cumulative.length - 1; i++) {
-                            if (cumulative[i].dist <= target && cumulative[i + 1].dist >= target) {
-                                lower = cumulative[i];
-                                upper = cumulative[i + 1];
-                                break;
-                            }
-                        }
-                        
-                        const fraction = (target - lower.dist) / (upper.dist - lower.dist);
-                        const interpolated = Math.round(lower.seconds + (upper.seconds - lower.seconds) * fraction);
-                        return secondsToTime(interpolated);
-                    } else {
-                        // For km, these are split times too, need to add first 5
-                        const totalSeconds = distances.slice(0, 5).reduce((sum, d) => sum + timeToSeconds(d.time), 0);
-                        return secondsToTime(totalSeconds);
+                if (distances.length === 0) return null;
+                
+                if (unitType === 'miles') {
+                    // Need to span at least 3.11 miles (5km)
+                    const target = 3.10686;
+                    if (distances[distances.length - 1].dist < target) return null; // Can't reach 5km yet
+                    
+                    let cumulativeSeconds = 0;
+                    let cumulative = [];
+                    for (const d of distances) {
+                        cumulativeSeconds += timeToSeconds(d.time);
+                        cumulative.push({ dist: d.dist, seconds: cumulativeSeconds });
                     }
+                    
+                    let lower = cumulative[0], upper = cumulative[1];
+                    for (let i = 0; i < cumulative.length - 1; i++) {
+                        if (cumulative[i].dist <= target && cumulative[i + 1].dist >= target) {
+                            lower = cumulative[i];
+                            upper = cumulative[i + 1];
+                            break;
+                        }
+                    }
+                    
+                    const fraction = (target - lower.dist) / (upper.dist - lower.dist);
+                    const interpolated = Math.round(lower.seconds + (upper.seconds - lower.seconds) * fraction);
+                    return secondsToTime(interpolated);
+                } else {
+                    // For km, need to reach at least 5km
+                    if (distances[distances.length - 1].dist < 5) return null; // Can't reach 5km yet
+                    
+                    const totalSeconds = distances.slice(0, 5).reduce((sum, d) => sum + timeToSeconds(d.time), 0);
+                    return secondsToTime(totalSeconds);
                 }
-                return null;
             };
 
             const getDistanceLabels = (unitType) => {
@@ -276,9 +278,12 @@
                             </div>
 
                             {session.total5km && (
-                                <div style={{ padding: '12px', backgroundColor: '#e8f5e9', border: '2px solid #4caf50', borderRadius: '6px', marginBottom: '15px', textAlign: 'center' }}>
-                                    <div style={{ fontSize: '12px', color: '#666' }}>5km Total</div>
-                                    <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#2e7d32', fontFamily: 'monospace' }}>{session.total5km}</div>
+                                <div style={{ padding: '12px', backgroundColor: '#e8f5e9', border: '2px solid #4caf50', borderRadius: '6px', marginBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <div>
+                                        <div style={{ fontSize: '12px', color: '#666' }}>5km Total</div>
+                                        <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#2e7d32', fontFamily: 'monospace' }}>{session.total5km}</div>
+                                    </div>
+                                    <button onClick={() => copyToClipboard(session.total5km)} style={{ padding: '8px 12px', backgroundColor: '#4caf50', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: '500', fontSize: '13px' }}>Copy</button>
                                 </div>
                             )}
 
